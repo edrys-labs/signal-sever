@@ -2,6 +2,9 @@
 
 import { serve } from 'https://deno.land/std@0.196.0/http/server.ts'
 
+// Global map to store BroadcastChannels per room
+const broadcastChannels: Map<string, BroadcastChannel> = new Map()
+
 serve((req) => {
   const { searchParams } = new URL(req.url)
   const room = searchParams.get('room') || 'default'
@@ -14,32 +17,41 @@ serve((req) => {
 
   const { socket, response } = Deno.upgradeWebSocket(req)
 
-  // Create a unique channel name for each room
-  const channelName = `room_${room}`
-  const broadcast = new BroadcastChannel(channelName)
-
-  socket.onmessage = (event) => {
-    // Broadcast the message to other instances
-    broadcast.postMessage({
-      data: event.data,
-    })
+  // Retrieve or create a BroadcastChannel for the room
+  let broadcast = broadcastChannels.get(room)
+  if (!broadcast) {
+    broadcast = new BroadcastChannel(`room_${room}`)
+    broadcastChannels.set(room, broadcast)
   }
 
-  // Listen for messages from other instances
-  broadcast.onmessage = (event) => {
+  // Handler for incoming WebSocket messages
+  socket.onmessage = (event) => {
+    // Broadcast the message to all other clients in the room
+    broadcast.postMessage(event.data)
+  }
+
+  // Handler for messages from the BroadcastChannel
+  const onBroadcastMessage = (event: MessageEvent) => {
     if (socket.readyState === WebSocket.OPEN) {
-      socket.send(event.data.data)
+      socket.send(event.data)
     }
   }
 
+  // Listen to the BroadcastChannel
+  broadcast.addEventListener('message', onBroadcastMessage)
+
+  // Cleanup when the WebSocket is closed
   socket.onclose = () => {
-    broadcast.close()
+    broadcast?.removeEventListener('message', onBroadcastMessage)
+    // Optionally remove the BroadcastChannel if no clients are connected
+    // This requires tracking the number of clients per room
   }
 
+  // Handle WebSocket errors
   socket.onerror = (err) => {
     console.error('WebSocket error:', err)
     socket.close()
-    broadcast.close()
+    broadcast?.removeEventListener('message', onBroadcastMessage)
   }
 
   return response
